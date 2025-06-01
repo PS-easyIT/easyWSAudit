@@ -570,6 +570,66 @@ function Format-ConnectionTreeHTML {
     return $html
 }
 
+# === VERBINDUNGSAUDIT SPEZIFISCHE KOMMANDOS ===
+$connectionAuditCommands = @(
+    # === AKTIVE NETZWERKVERBINDUNGEN ===
+    @{Name="Alle TCP Verbindungen"; Command="Get-NetTCPConnection | Select-Object LocalAddress, LocalPort, RemoteAddress, RemotePort, State, OwningProcess, CreationTime | Sort-Object State, LocalPort"; Type="PowerShell"; Category="TCP-Connections"},
+    @{Name="Etablierte TCP Verbindungen"; Command="Get-NetTCPConnection -State Established | Select-Object LocalAddress, LocalPort, RemoteAddress, RemotePort, OwningProcess, CreationTime"; Type="PowerShell"; Category="TCP-Connections"},
+    @{Name="Lauschende Ports (Listen)"; Command="Get-NetTCPConnection -State Listen | Select-Object LocalAddress, LocalPort, OwningProcess | Sort-Object LocalPort"; Type="PowerShell"; Category="TCP-Connections"},
+    @{Name="UDP Endpunkte"; Command="Get-NetUDPEndpoint | Select-Object LocalAddress, LocalPort, OwningProcess | Sort-Object LocalPort"; Type="PowerShell"; Category="UDP-Connections"},
+    @{Name="Externe Verbindungen (nicht lokal)"; Command="Get-NetTCPConnection | Where-Object {`$_.RemoteAddress -notmatch '^127\.|^10\.|^192\.168\.|^172\.(1[6-9]|2[0-9]|3[0-1])\.|^::1|^fe80:' -and `$_.RemoteAddress -ne '0.0.0.0' -and `$_.RemoteAddress -ne '::'} | Select-Object LocalAddress, LocalPort, RemoteAddress, RemotePort, State, OwningProcess"; Type="PowerShell"; Category="External-Connections"},
+    
+    # === PROZESS-NETZWERK ZUORDNUNG ===
+    @{Name="Prozesse mit Netzwerkverbindungen"; Command="Get-NetTCPConnection | Where-Object {`$_.State -eq 'Established'} | ForEach-Object { `$conn = `$_; try { `$process = Get-Process -Id `$conn.OwningProcess -ErrorAction Stop; [PSCustomObject]@{ ProcessName = `$process.ProcessName; PID = `$process.Id; LocalAddress = `$conn.LocalAddress; LocalPort = `$conn.LocalPort; RemoteAddress = `$conn.RemoteAddress; RemotePort = `$conn.RemotePort; ProcessPath = `$process.Path } } catch { [PSCustomObject]@{ ProcessName = 'Unknown'; PID = `$conn.OwningProcess; LocalAddress = `$conn.LocalAddress; LocalPort = `$conn.LocalPort; RemoteAddress = `$conn.RemoteAddress; RemotePort = `$conn.RemotePort; ProcessPath = 'N/A' } } } | Sort-Object ProcessName"; Type="PowerShell"; Category="Process-Network"},
+    @{Name="Top Prozesse nach Verbindungen"; Command="`$connections = Get-NetTCPConnection | Group-Object OwningProcess; `$connections | ForEach-Object { try { `$process = Get-Process -Id `$_.Name -ErrorAction Stop; [PSCustomObject]@{ ProcessName = `$process.ProcessName; PID = `$_.Name; ConnectionCount = `$_.Count; ProcessPath = `$process.Path } } catch { [PSCustomObject]@{ ProcessName = 'Unknown'; PID = `$_.Name; ConnectionCount = `$_.Count; ProcessPath = 'N/A' } } } | Sort-Object ConnectionCount -Descending | Select-Object -First 20"; Type="PowerShell"; Category="Process-Network"},
+    @{Name="System-Prozesse mit Netzwerkzugriff"; Command="Get-NetTCPConnection | Where-Object {`$_.OwningProcess -lt 1000} | ForEach-Object { `$conn = `$_; try { `$process = Get-Process -Id `$conn.OwningProcess -ErrorAction Stop; [PSCustomObject]@{ ProcessName = `$process.ProcessName; PID = `$process.Id; LocalPort = `$conn.LocalPort; RemoteAddress = `$conn.RemoteAddress; State = `$conn.State } } catch { [PSCustomObject]@{ ProcessName = 'System/Unknown'; PID = `$conn.OwningProcess; LocalPort = `$conn.LocalPort; RemoteAddress = `$conn.RemoteAddress; State = `$conn.State } } } | Sort-Object PID"; Type="PowerShell"; Category="Process-Network"},
+    
+    # === LOKALE GERAETE (ARP-CACHE) ===
+    @{Name="ARP Cache (alle Geraete)"; Command="Get-NetNeighbor | Select-Object IPAddress, MacAddress, State, InterfaceAlias | Sort-Object IPAddress"; Type="PowerShell"; Category="Local-Devices"},
+    @{Name="ARP Cache (nur erreichbare)"; Command="Get-NetNeighbor -State Reachable | Select-Object IPAddress, MacAddress, InterfaceAlias"; Type="PowerShell"; Category="Local-Devices"},
+    @{Name="MAC-Adressen im lokalen Netz"; Command="arp -a"; Type="CMD"; Category="Local-Devices"},
+    @{Name="Netzwerk-Interfaces"; Command="Get-NetAdapter | Select-Object Name, InterfaceDescription, LinkSpeed, MacAddress, Status | Sort-Object Name"; Type="PowerShell"; Category="Local-Devices"},
+    @{Name="DHCP-Leases (falls DHCP-Server)"; Command="if (Get-WindowsFeature -Name DHCP | Where-Object {`$_.Installed}) { Get-DhcpServerv4Lease -AllLeases | Select-Object IPAddress, ClientId, HostName, LeaseExpiryTime | Sort-Object IPAddress } else { 'DHCP-Server nicht installiert' }"; Type="PowerShell"; Category="Local-Devices"},
+    
+    # === DNS INFORMATIONEN ===
+    @{Name="DNS Cache"; Command="Get-DnsClientCache | Select-Object Entry, Name, Data, TimeToLive | Sort-Object Name"; Type="PowerShell"; Category="DNS-Info"},
+    @{Name="DNS Server Konfiguration"; Command="Get-DnsClientServerAddress | Select-Object InterfaceAlias, ServerAddresses"; Type="PowerShell"; Category="DNS-Info"},
+    @{Name="Reverse DNS fuer externe IPs"; Command="`$extIPs = Get-NetTCPConnection | Where-Object {`$_.RemoteAddress -notmatch '^127\.|^10\.|^192\.168\.|^172\.(1[6-9]|2[0-9]|3[0-1])\.|^::1|^fe80:' -and `$_.RemoteAddress -ne '0.0.0.0' -and `$_.RemoteAddress -ne '::'} | Select-Object -ExpandProperty RemoteAddress -Unique; `$extIPs | ForEach-Object { try { `$hostname = [System.Net.Dns]::GetHostEntry(`$_).HostName; [PSCustomObject]@{ IPAddress = `$_; Hostname = `$hostname } } catch { [PSCustomObject]@{ IPAddress = `$_; Hostname = 'Aufloesung fehlgeschlagen' } } } | Sort-Object IPAddress"; Type="PowerShell"; Category="DNS-Info"},
+    
+    # === GEO-IP INFORMATIONEN ===
+    @{Name="Geo-IP Analyse externer Verbindungen"; Command="`$extIPs = Get-NetTCPConnection | Where-Object {`$_.RemoteAddress -notmatch '^127\.|^10\.|^192\.168\.|^172\.(1[6-9]|2[0-9]|3[0-1])\.|^::1|^fe80:' -and `$_.RemoteAddress -ne '0.0.0.0' -and `$_.RemoteAddress -ne '::'} | Select-Object -ExpandProperty RemoteAddress -Unique | Select-Object -First 10; `$extIPs | ForEach-Object { try { `$geoInfo = Invoke-RestMethod `"http://ipinfo.io/`$_/json`" -TimeoutSec 5; [PSCustomObject]@{ IPAddress = `$_; Country = `$geoInfo.country; Region = `$geoInfo.region; City = `$geoInfo.city; Organization = `$geoInfo.org; ISP = `$geoInfo.isp } } catch { [PSCustomObject]@{ IPAddress = `$_; Country = 'N/A'; Region = 'N/A'; City = 'N/A'; Organization = 'Abfrage fehlgeschlagen'; ISP = 'N/A' } } }"; Type="PowerShell"; Category="Geo-IP"},
+    
+    # === FIREWALL UND LOGGING ===
+    @{Name="Firewall Verbindungs-Logs"; Command="if (Test-Path `$env:SystemRoot\\system32\\LogFiles\\Firewall\\pfirewall.log) { Get-Content `$env:SystemRoot\\system32\\LogFiles\\Firewall\\pfirewall.log -Tail 50 | Where-Object {`$_ -match 'ALLOW|DROP'} } else { 'Firewall-Logging nicht aktiviert oder Log-Datei nicht gefunden' }"; Type="PowerShell"; Category="Firewall-Logs"},
+    @{Name="Firewall Logging Status"; Command="Get-NetFirewallProfile | Select-Object Name, LogAllowed, LogBlocked, LogFileName, LogMaxSizeKilobytes"; Type="PowerShell"; Category="Firewall-Logs"},
+    @{Name="Aktive Firewall Regeln"; Command="Get-NetFirewallRule | Where-Object {`$_.Enabled -eq 'True' -and `$_.Action -eq 'Allow'} | Select-Object DisplayName, Direction, Protocol, LocalPort, RemoteAddress | Sort-Object Direction, Protocol"; Type="PowerShell"; Category="Firewall-Logs"},
+    
+    # === EVENT LOGS FUER VERBINDUNGEN ===
+    @{Name="Netzwerk-Events (Security Log)"; Command="Get-WinEvent -FilterHashtable @{LogName='Security'; ID=5156,5157,5158} -MaxEvents 50 | Select-Object TimeCreated, Id, LevelDisplayName, Message"; Type="PowerShell"; Category="Network-Events"},
+    @{Name="Prozessstart-Events"; Command="Get-WinEvent -FilterHashtable @{LogName='Security'; ID=4688} -MaxEvents 30 | Select-Object TimeCreated, Message"; Type="PowerShell"; Category="Network-Events"},
+    @{Name="Windows Firewall Events"; Command="Get-WinEvent -FilterHashtable @{LogName='Microsoft-Windows-Windows Firewall With Advanced Security/Firewall'} -MaxEvents 30 | Select-Object TimeCreated, Id, LevelDisplayName, Message"; Type="PowerShell"; Category="Network-Events"},
+    
+    # === DOMAENEN-USER AUDIT (DE/EN) ===
+    @{Name="AD-User (aktuelle Domaene)"; Command="if (Get-Module -ListAvailable -Name ActiveDirectory) { Import-Module ActiveDirectory; Get-ADUser -Filter * -Properties LastLogonDate, PasswordLastSet, Enabled | Select-Object Name, SamAccountName, Enabled, LastLogonDate, PasswordLastSet, DistinguishedName | Sort-Object Name } else { 'ActiveDirectory PowerShell-Modul nicht verfuegbar' }"; Type="PowerShell"; FeatureName="AD-Domain-Services"; Category="Domain-Users"},
+    @{Name="Aktuell angemeldete Domaenen-User"; Command="if (Get-Module -ListAvailable -Name ActiveDirectory) { Import-Module ActiveDirectory; Get-WinEvent -FilterHashtable @{LogName='Security'; ID=4624} -MaxEvents 100 | Where-Object {`$_.Message -match 'Logon Type:\\s*[23]' -and `$_.Message -notmatch 'ANONYMOUS|`$'} | ForEach-Object { if (`$_.Message -match 'Account Name:\\s*([^\\r\\n]+)' -and `$_.Message -match 'Account Domain:\\s*([^\\r\\n]+)') { [PSCustomObject]@{ TimeCreated = `$_.TimeCreated; AccountName = `$matches[1].Trim(); AccountDomain = `$matches[2].Trim(); LogonType = if (`$_.Message -match 'Logon Type:\\s*(\\d+)') { `$matches[1] } else { 'Unknown' } } } } | Where-Object {`$_.AccountName -ne '-' -and `$_.AccountName -ne 'ANONYMOUS LOGON'} | Sort-Object TimeCreated -Descending | Select-Object -First 20 } else { 'ActiveDirectory PowerShell-Modul nicht verfuegbar' }"; Type="PowerShell"; Category="Domain-Users"},
+    @{Name="Privilegierte AD-Gruppen Mitglieder"; Command="if (Get-Module -ListAvailable -Name ActiveDirectory) { Import-Module ActiveDirectory; `$privGroups = @('Domain Admins', 'Enterprise Admins', 'Schema Admins', 'Administrators', 'Domänen-Admins', 'Organisations-Admins', 'Schema-Admins'); `$results = @(); foreach (`$group in `$privGroups) { try { `$members = Get-ADGroupMember -Identity `$group -ErrorAction SilentlyContinue | Get-ADUser -Properties LastLogonDate -ErrorAction SilentlyContinue; foreach (`$member in `$members) { `$results += [PSCustomObject]@{ GroupName = `$group; UserName = `$member.Name; SamAccountName = `$member.SamAccountName; Enabled = `$member.Enabled; LastLogonDate = `$member.LastLogonDate } } } catch { } }; `$results | Sort-Object GroupName, UserName } else { 'ActiveDirectory PowerShell-Modul nicht verfuegbar' }"; Type="PowerShell"; FeatureName="AD-Domain-Services"; Category="Domain-Users"},
+    @{Name="Letzten Anmeldungen (Domaene)"; Command="if (Get-Module -ListAvailable -Name ActiveDirectory) { Import-Module ActiveDirectory; Get-WinEvent -FilterHashtable @{LogName='Security'; ID=4624,4625} -MaxEvents 100 | Where-Object {`$_.Message -notmatch 'ANONYMOUS|`$' -and `$_.Message -match '@|\\\\'} | ForEach-Object { if (`$_.Message -match 'Account Name:\\s*([^\\r\\n]+)' -and `$_.Message -match 'Account Domain:\\s*([^\\r\\n]+)') { [PSCustomObject]@{ TimeCreated = `$_.TimeCreated; EventID = `$_.Id; AccountName = `$matches[1].Trim(); AccountDomain = `$matches[2].Trim(); Status = if (`$_.Id -eq 4624) { 'Erfolg' } else { 'Fehlgeschlagen' } } } } | Where-Object {`$_.AccountName -ne '-'} | Sort-Object TimeCreated -Descending | Select-Object -First 30 } else { 'ActiveDirectory PowerShell-Modul nicht verfuegbar' }"; Type="PowerShell"; Category="Domain-Users"},
+    
+    # === REMOTE VERBINDUNGEN ===
+    @{Name="RDP-Sitzungen"; Command="qwinsta"; Type="CMD"; Category="Remote-Sessions"},
+    @{Name="Remote Desktop Events"; Command="Get-WinEvent -FilterHashtable @{LogName='Microsoft-Windows-TerminalServices-LocalSessionManager/Operational'} -MaxEvents 30 | Select-Object TimeCreated, Id, LevelDisplayName, Message"; Type="PowerShell"; Category="Remote-Sessions"},
+    @{Name="SMB-Verbindungen"; Command="Get-SmbConnection | Select-Object ServerName, ShareName, UserName, Dialect"; Type="PowerShell"; Category="Remote-Sessions"},
+    @{Name="SMB-Freigaben Zugriffe"; Command="Get-WinEvent -FilterHashtable @{LogName='Microsoft-Windows-SmbServer/Security'} -MaxEvents 50 | Select-Object TimeCreated, Id, Message"; Type="PowerShell"; Category="Remote-Sessions"},
+    
+    # === ROUTING UND NETZWERK-TOPOLOGIE ===
+    @{Name="Routing Tabelle"; Command="Get-NetRoute | Select-Object DestinationPrefix, NextHop, InterfaceAlias, RouteMetric, Protocol | Sort-Object DestinationPrefix"; Type="PowerShell"; Category="Network-Topology"},
+    @{Name="Netzwerk-Statistiken"; Command="Get-NetAdapterStatistics | Select-Object Name, BytesReceived, BytesSent, PacketsReceived, PacketsSent"; Type="PowerShell"; Category="Network-Topology"},
+    @{Name="Gateway-Informationen"; Command="Get-NetIPConfiguration | Where-Object {`$_.IPv4DefaultGateway} | Select-Object InterfaceAlias, IPv4Address, IPv4DefaultGateway, DNSServer"; Type="PowerShell"; Category="Network-Topology"}
+)
+
+# Variable fuer die Verbindungsaudit-Ergebnisse
+$global:connectionAuditResults = @{}
+
 # Funktion zum Ausfuehren von PowerShell-Befehlen
 function Invoke-PSCommand {
     param(
